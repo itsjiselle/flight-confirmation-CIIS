@@ -1,0 +1,209 @@
+
+
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>机票确认单生成工具-J </title>
+    <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.4/dist/pizzip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3.42.0/build/docxtemplater.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    
+    <style>
+        body { font-family: 'PingFang SC', sans-serif; background-color: #f0f4f8; padding: 30px; color: #1e293b; }
+        .card { max-width: 850px; margin: 0 auto; background: white; padding: 40px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        .status { padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 20px; font-weight: bold; font-size: 14px; }
+        .ready { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .loading { background: #fee2e2; color: #991b1b; }
+        textarea { width: 100%; height: 220px; padding: 15px; border: 2px solid #e2e8f0; border-radius: 12px; font-family: 'Courier New', monospace; box-sizing: border-box; }
+        .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.2s; margin-top: 15px; }
+        .btn-blue { background: #3b82f6; color: white; }
+        .btn-green { background: #10b981; color: white; display: none; }
+        .preview { margin-top: 30px; background: #f8fafc; padding: 20px; border-radius: 12px; border: 1px solid #e2e8f0; display: none; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px; }
+        .error-log { margin-top: 20px; color: #dc2626; background: #fef2f2; padding: 15px; border-radius: 8px; border: 1px solid #fecaca; display: none; white-space: pre-wrap; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <div id="statusBox" class="status loading">⏳ 正在加载插件，请稍候...</div>
+    <h1>✈️ 机票确认单自动化工具</h1>
+
+    <label>1. 上传模板 (.docx)</label>
+    <input type="file" id="fileIn" accept=".docx" style="margin-bottom:20px; display:block;" />
+
+    <label>2. 粘贴行程/航站楼信息</label>
+    <textarea id="txtIn" placeholder="在此粘贴原始文本信息...*A前两行， wetr*2，VI*"></textarea>
+
+    <button class="btn btn-blue" onclick="doProcess()">识别信息</button>
+    
+    <div id="preView" class="preview">
+        <h3 style="margin-top:0;">🔍 识别结果预览</h3>
+        <div id="preGrid" class="grid"></div>
+        <button id="dlBtn" class="btn btn-green" onclick="doDownload()">生成并下载 Word</button>
+    </div>
+
+<div id="successMsg" style="display:none; margin-top:20px; padding:15px; background:#fffbe6; color:#856404; border:1px solid #ffeeba; border-radius:12px; font-weight:bold; text-align:center; font-size:16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+    ❗️❗️请手动修改舱位、日期、补充航站楼中文❗️
+</div>
+
+    <div id="errBox" class="error-log"></div>
+</div>
+
+<script>
+    let rawTpl = null;
+    let resData = null;
+
+    // 检查插件加载
+    const checkLibs = setInterval(() => {
+        if (window.PizZip && window.docxtemplater) {
+            document.getElementById('statusBox').innerText = "✅ 系统准备就绪";
+            document.getElementById('statusBox').className = "status ready";
+            clearInterval(checkLibs);
+        }
+    }, 500);
+
+    // 辅助函数：格式化日期 07JUN -> 2026-06-07 星期五
+    function formatFlightDate(dateStr) {
+        if (!dateStr || dateStr.length < 5) return dateStr;
+        const day = dateStr.substring(0, 2);
+        const monthStr = dateStr.substring(2, 5).toUpperCase();
+        const months = {
+            'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
+            'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
+        };
+        const month = months[monthStr];
+        // 默认年份设为 2026，你可以根据需要改为 new Date().getFullYear()
+        const year = 2026; 
+        const d = new Date(year, month, parseInt(day));
+        
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const weekDays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+        const dayOfWeek = weekDays[d.getDay()];
+
+        // 返回 2026-04-17 + 换行 + 星期几
+        return `${yyyy}-${mm}-${dd}\n${dayOfWeek}`;
+    }
+
+    // 辅助函数：格式化时间 0830 -> 08:30
+    function formatTime(t) {
+        if (t && t.length === 4) {
+            return t.substring(0, 2) + ":" + t.substring(2, 4);
+        }
+        return t;
+    }
+
+    // 辅助函数：格式化票号 7811234567890 -> 781-1234567890
+    function formatTicketNo(tkt) {
+        if (tkt && tkt.length > 3) {
+            return tkt.substring(0, 3) + "-" + tkt.substring(3);
+        }
+        return tkt;
+    }
+
+    document.getElementById('fileIn').onchange = (e) => {
+        const reader = new FileReader();
+        reader.onload = (ev) => { rawTpl = ev.target.result; };
+        reader.readAsArrayBuffer(e.target.files[0]);
+    };
+
+    function doProcess() {
+        const text = document.getElementById('txtIn').value;
+        if (!rawTpl) return alert("请先上传模板！");
+        if (!text) return alert("请粘贴内容！");
+
+        const d = {
+            booking_ref: "", airline_pnr: "", issued_date: "", passenger_name: "",
+            ticket_no: "", cert_no: " ", flight_no: "", class: "", flight_date: "",
+            dept_time: "", arr_time: "", route: "", baggage: "不含", raw_route: ""
+        };
+
+        const find = (re, s) => { const m = s.match(re); return m ? m[1].trim() : ""; };
+
+        // 基础提取
+        d.booking_ref = find(/PNR:(\w+)/, text);
+        d.airline_pnr = find(/\*([A-Z0-9]{6})/, text);
+        d.issued_date = find(/ISSUED:(\w+)/, text);
+        d.passenger_name = find(/1\.1([\w\/]+)/, text);
+        
+        // 修改点2：票号增加横杠
+        const rawTicket = find(/TKT:(\d+)/, text);
+        d.ticket_no = formatTicketNo(rawTicket);
+
+        // 航班行识别
+        const flMatch = text.match(/([A-Z]{2})\s*(\d{1,4})\s*([A-Z])\s+(\d{2}[A-Z]{3})\s+\d\s+([A-Z]{6})\s+HK1\s+(\d{4})\s+(\d{4})/);
+        if (flMatch) {
+            d.flight_no = flMatch[1] + flMatch[2];
+            d.class = flMatch[3];
+            // 修改点3：日期格式化 (2026-XX-XX 星期几)
+            d.flight_date = formatFlightDate(flMatch[4]);
+            d.raw_route = flMatch[5];
+            // 修改点1：起飞到达时间增加冒号
+            d.dept_time = formatTime(flMatch[6]);
+            d.arr_time = formatTime(flMatch[7]);
+        }
+
+        // 航站楼识别逻辑保持不变...
+        const depT = find(/DEP-TERMINAL\s+([A-Z0-9])/, text);
+        const arrTMatches = [...text.matchAll(/ARR-TERMINAL\s+([A-Z0-9])/g)];
+        const lastArrT = arrTMatches.length > 0 ? arrTMatches[arrTMatches.length - 1][1] : "";
+        
+        if (d.raw_route) {
+            const org = d.raw_route.substring(0,3);
+            const dst = d.raw_route.substring(3,6);
+            d.route = `${org}${depT?'(T'+depT+')':''}-${dst}${lastArrT?'(T'+lastArrT+')':''}`;
+        }
+
+        d.baggage = find(/BAG:(.*?)(\n|$)/, text) || "不含";
+
+        // 渲染预览
+        resData = d;
+        const grid = document.getElementById('preGrid');
+        grid.innerHTML = "";
+        const labels = {
+            booking_ref: "记录编号", airline_pnr: "航司编码", passenger_name: "旅客姓名",
+            ticket_no: "票号", flight_no: "航班号", flight_date: "出发日期",
+            route: "行程路线", dept_time: "起飞时间", arr_time: "到达时间"
+        };
+        for(let k in labels) grid.innerHTML += `<div><b>${labels[k]}:</b> ${d[k].replace(/\n/g, ' ') || '---'}</div>`;
+        
+        document.getElementById('preView').style.display = 'block';
+        document.getElementById('dlBtn').style.display = 'block';
+        document.getElementById('errBox').style.display = 'none';
+    }
+
+    function doDownload() {
+        const errBox = document.getElementById('errBox');
+        try {
+            const zip = new PizZip(rawTpl);
+            const doc = new window.docxtemplater(zip, {
+                paragraphLoop: true,
+                linebreaks: true, // 确保换行符 \n 在Word中生效
+                nullGetter: function() { return ""; } 
+            });
+
+            doc.render(resData);
+
+            const out = doc.getZip().generate({
+                type: "blob",
+                mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            });
+
+            const safeName = (resData.passenger_name || "无名").replace(/\//g, "_");
+            const fileName = `${resData.flight_no || '未知'} ${resData.raw_route || ''}-${resData.booking_ref || ''}-${safeName}.docx`;
+            
+            saveAs(out, fileName.trim());
+            document.getElementById('successMsg').style.display = 'block';
+        } catch (e) {
+            errBox.style.display = 'block';
+            errBox.innerText = "❌ 生成失败详情：\n" + e.message;
+            console.error(e);
+        }
+    }
+</script>
+</body>
+</html>
